@@ -502,46 +502,46 @@ class AsyncTemperatureReader
 
     void readScratchpadAsync(const uint8_t* deviceAddress, uint8_t *scratchPad)
     {
-      cli();
+      noInterrupts();
       deviceAddr = deviceAddress;
       sPad = scratchPad;
       flushStack();
       status = StillBusy;
       push(ClearBusyStatus); // Operations back to front on the stack: do this when ReadScratchPad terminates
       push(ReadScratchPad);
-      sei();
+      interrupts();
     }
 
     void resetAsync()
     {
-      cli();
+      noInterrupts();
       flushStack();
       status = StillBusy;
       push(ClearBusyStatus);  // Do this when Reset terminates
       push(Reset);
-      sei();
+      interrupts();
     }
 
     void convertAllTemperaturesAsync() {
-      cli();
+      noInterrupts();
       flushStack();
       status =  DevicesAreBusy;
       push(WaitForBusRelease);
       pushSendOneByte(STARTCONVO);
       pushSendOneByte(SKIPROMWILDCARD);
       push(Reset);
-      sei();
+      interrupts();
     }
 
     int getRaw(byte *deviceAddress, byte *scratchPad) 
     {
       byte lsb, msb, b6, b7;
-      cli();
+      noInterrupts();
       lsb = scratchPad[0];
       msb = scratchPad[1];
       b6 = scratchPad[6];
       b7 = scratchPad[7];
-      sei();
+      interrupts();
 
       // Now interpret the raw values on the basis of the type of sensor
       switch (deviceAddress[0]) {
@@ -594,7 +594,7 @@ class AsyncTemperatureReader
 
     void doTestTimings(uint16_t repeats)
     {
-      cli();
+      noInterrupts();
       flushStack();
       status = StillBusy;
       push(ClearBusyStatus);
@@ -603,15 +603,15 @@ class AsyncTemperatureReader
       push(repeats & 0xFF); // LoByte
 
       push(TestTimings);
-      sei();
+      interrupts();
     }
 
     byte getStatus()
     {
       byte result;
-      cli();
+      noInterrupts();
       result = status;
-      sei();
+      interrupts();
       return result;
     }
 
@@ -619,7 +619,7 @@ class AsyncTemperatureReader
     {
       // Initial setup of the timer, etc. 
       
-      cli();   //stop interrupts
+      noInterrupts();   //stop interrupts
       pinMode(debugPin, OUTPUT);
       flushStack();
 
@@ -634,7 +634,7 @@ class AsyncTemperatureReader
       TCNT2  = 0;   //initialize counter value to 0
       TCCR2B |= (1 << CS22);  // pg 162./ Pg188  Attach timer to prescaler source. This starts the timer
 
-      sei();   //allow interrupts
+      interrupts();   //allow interrupts
     }
 
     byte busyWaitForZeroStatus(const char *msg, int millisTimeout)

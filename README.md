@@ -471,8 +471,8 @@ That gave me `(x1, y1)`.  With two points I assumed a straight line adjustment
 `f(x) = a + bx` was needed.  (I paid attention in school when we were doing
 graphs and straight line algebra!) So I back-calculated `a` and `b`.  
 
-I don't have an accurate digital thermometer to allow more  
-accurate calibration. The slope of the line is about 1.2, which means that
+I don't have an accurate thermometer to allow better
+calibration. The slope of the line is about 1.2, which means that
 for every 10 degrees increase that the reference sensor reports, the other sensor
 thinks the temperature has only risen by about 8.3 degrees. 
 
@@ -486,7 +486,7 @@ project. So I've concluded now that any sensor embedded in a
 plastic casing is not 
 really ideal for fast-response measurements. They're fine for slow 
 environmental sensing, perhaps to turn on a fan or a nice DIY project 
-to turn on your peltier cooling module if your beer gets too warm.  
+to turn on your peltier cooling module if your beer gets too warm. 
 But they're not going to be responsive enough catch a fast rise in 
 MOSFET temperatures that tells me something is about to emit its magic 
 blue smoke.  

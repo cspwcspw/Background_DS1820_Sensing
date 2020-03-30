@@ -51,7 +51,7 @@ const int None = 0;
 const int Async = 1;
 const int Dallas = 2;
 
-/*
+
 void loop(void) {
 
 #ifdef CompareAgainstDallasLib
@@ -63,13 +63,14 @@ void loop(void) {
 
   delay(20000);
 }
-*/ 
+
 //You could use this main loop for looking at timings.
+/*
 void loop(void) {    
    myTemperatureSensors.doTestTimings(1000);
    delay(20000);
 }
-
+*/
 
 
 // The experiment senses each of the two sensors per second.
