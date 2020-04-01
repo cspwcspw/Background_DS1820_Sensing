@@ -21,13 +21,13 @@
 // value in less than about 10 millisecs, almost all spent blocking, and busy-waiting.
 // We can't make the wire go faster.
 //
-// But a fun thing to do is to drive the protocol through an interpreter 
+// But a fun thing to do is to drive the protocol through an interpreter
 // that does not use long busy waits so your MCU can be doing its usual
 // stuff in the meantime.
 
 #include <util/delay.h>   // For _delay_us() which is more accurate than delayMicroseconds
 
-const int stackSize = 20;  
+const int stackSize = 24;
 
 // Various debugging and diagnostic stuff ---------------
 
@@ -55,6 +55,7 @@ void toggleDebugLine()
   digitalWrite(debugPin, debugOutput);
   debugOutput = !debugOutput;
 }
+
 
 // ---------------------
 
@@ -127,6 +128,8 @@ inline byte sampleBus()
 
 
 // OneWire commands, only some are used here
+#define SEARCHROM       0xF0  // Initiates the next cycle of device discovery.
+#define READROM         0x33  // Used if you have a single-drop bus (only one slave on the bus).
 #define STARTCONVO      0x44  // Tells device to take a temperature reading and put it on the scratchpad
 #define COPYSCRATCH     0x48  // Copy EEPROM
 #define READSCRATCH     0xBE  // Read EEPROM
@@ -139,7 +142,7 @@ inline byte sampleBus()
 // Used in this lib ahead of STARTCONVO command.
 
 
-// Status codes. 
+// Status codes.
 const byte Success = 0x00;           // Zero means "ok, all done successfully"
 const byte StillBusy = 0x01;
 const byte NoDeviceOnBus = 0x02;     // bit set indicates no device on bus
@@ -192,12 +195,12 @@ class AsyncTemperatureReader
 
     uint8_t status;
 
-    byte receiveRegister;     // As bits arrive on the wire we store them in here.
-
     const uint8_t *deviceAddr;     // The device address of the sensor
     byte idByteIndex;        // Counts up from 0 to 8 as we send address bytes
 
-    uint8_t *sPad;           // A 9-byte scratchpad for reading info from the sensor
+    uint8_t *inputBuf;           // A buffer, supplied by the user, for reading data from the sensor
+    // Usually used for reading the device's scratchpad, but sometimes
+    // we can read the device's ID here.
 
     void flushStack() {
       topOfStack = 0;
@@ -245,7 +248,8 @@ class AsyncTemperatureReader
     {
       return theCode[--topOfStack];
     }
-
+   
+ 
     inline void pushSendOneByte(byte b)
     { push(b);
       push(8);
@@ -289,16 +293,18 @@ class AsyncTemperatureReader
             break;
 
           case SendRemainingBits: {
-              byte bitsToGo = pop();
-              byte toSend = pop();
-              byte theBitToSend = toSend & 0x01;
-              if (--bitsToGo  > 0) {
-                toSend >>= 1;
-                push(toSend);
-                push(bitsToGo);
+              //  top of stack is the number of bits still to send
+              // below that is the remainder of the byte we are presently sending.
+              byte theBitToSend = theCode[topOfStack-2] & 0x01;
+              if (--theCode[topOfStack-1] > 0) {  // more work remaining after this bit?
+                theCode[topOfStack-2] >>= 1;  
                 push(SendRemainingBits);
               }
+              else {
+                topOfStack -= 2;                // lose the operands
+              }
 
+              // Now put the bit we have to send on the wire
               if (theBitToSend == 1) {
                 // Specs, pg 2 of  http://ww1.microchip.com/downloads/en/appnotes/01199a.pdf
                 // Drive bus low, delay 6 μs.
@@ -325,14 +331,20 @@ class AsyncTemperatureReader
             break;
 
           case ReadScratchPad: {
+              // Grab the parameter that tells if we have just one device, or many devices, on the bus.
+              bool multiDropBus = pop();
               // Push what we need to do onto the stack, back to front...
               push(Reset);
-
-              receiveRegister = 0;
+              push(72);             // number of bits we want to read.
               push(0);              // index of next bit to store [0..72]
               push(ReadRemainingBits);
               pushSendOneByte(READSCRATCH);
-              push(StartIDSend);
+              if (multiDropBus) {
+                push(StartIDSend);
+              }
+              else {
+                pushSendOneByte(SKIPROMWILDCARD);
+              }
               push(Reset);
             }
             break;
@@ -345,7 +357,6 @@ class AsyncTemperatureReader
               //   Sample bus to read bit from slave.
               //   Delay 55 μs.
 
-
               digitalWrite(debugPin, LOW);
               pullBusLow();
               _delay_us(6);
@@ -353,27 +364,22 @@ class AsyncTemperatureReader
               _delay_us(9);
               int thisBit = sampleBus();
               digitalWrite(debugPin, HIGH);
-              // Shift the new bit into the receive register
-              byte bitPos = pop();          // a value 0..71
-              if (thisBit)  { // we need to store the 1 bit
+
+              byte bitPos = theCode[topOfStack-1];         // a value 0.. that counts up as bits arrive
+              byte numBitsToRead = theCode[topOfStack-2];  // a value that tells us when to exit the loop
+
+              // Shift the new bit into the receive buffer
+              if (thisBit)  {  // we need to store the 1 bit
                 byte mask = 0x01 << (bitPos % 8); // create a mask
-                receiveRegister |= mask;
+                byte inputBufIndx = (bitPos / 8);
+                inputBuf[inputBufIndx] |= mask;               
               }
-              bitPos++;   // advance for next time
-              if (bitPos % 8 == 0) // but wait, have we just completed a whole byte?
-              {
-                byte sPadIndx = (bitPos / 8) - 1;
-                sPad[sPadIndx] = receiveRegister;
-                receiveRegister = 0;
-                // But wait again. Have we just completed the whole scratchpad read?
-                if (bitPos < 72) { // no, rinse and repeat
-                  push(bitPos);
-                  push(ReadRemainingBits);
-                }
-              }
+              
+              if (++theCode[topOfStack-1] < numBitsToRead) {  // if still more bits need to be read
+                   push(ReadRemainingBits);
+              }   
               else {
-                push(bitPos);
-                push(ReadRemainingBits);
+                topOfStack -= 2;  // lose the operands, we're done here.      
               }
               YieldFor(Micros55);
             }
@@ -496,19 +502,53 @@ class AsyncTemperatureReader
         } // switch(opCode)
 
       } while (true);  // Loop until one of the Yield operations ends the loop
-
     }
 
-
-    void readScratchpadAsync(const uint8_t* deviceAddress, uint8_t *scratchPad)
+  private:
+    void _readScratchpad(bool isMultidrop, const uint8_t* deviceAddress, uint8_t *scratchPad)
     {
       noInterrupts();
-      deviceAddr = deviceAddress;
-      sPad = scratchPad;
+      if (isMultidrop) {
+        deviceAddr = deviceAddress;
+      }
+      inputBuf = scratchPad;
+      memset(inputBuf, 0, 9); // we only store 1 bits, so this array must be zeroed. 
       flushStack();
       status = StillBusy;
       push(ClearBusyStatus); // Operations back to front on the stack: do this when ReadScratchPad terminates
+      push(isMultidrop);     // set up multi-drop parameter so ReadScratch knows what to do
       push(ReadScratchPad);
+      interrupts();
+    }
+
+  public:
+
+    void readScratchpadAsync(const uint8_t* deviceAddress, uint8_t *scratchPad)
+    {
+      _readScratchpad(true, deviceAddress, scratchPad);
+    }
+
+    // If we have single-drop bus (i.e. only one device on the bus) there is no need
+    // to send the deviceAddress.   DS18B20 datasheet, page 11
+    void readUniqueScratchpadAsync(uint8_t *scratchPad)
+    {
+      _readScratchpad(false, NULL, scratchPad);
+    }
+
+    // If we have a single-drop bus there is a lightweight way to discover its ID
+    void getUniqueDeviceIDAsync(byte* deviceAddress)
+    {
+      noInterrupts();
+      inputBuf = deviceAddress;
+      memset(inputBuf, 0, 8); // we only store 1 bits, so this array must be zeroed. 
+      flushStack();
+      status = StillBusy;
+      push(ClearBusyStatus); // Operations back to front on the stack: do this when ReadScratchPad terminates
+      push(64);  // total number of bits we want to read
+      push(0);   // and the index to put the next bit in the buffer   
+      push(ReadRemainingBits);
+      pushSendOneByte(READROM);
+      push(Reset);
       interrupts();
     }
 
@@ -533,7 +573,7 @@ class AsyncTemperatureReader
       interrupts();
     }
 
-    int getRaw(byte *deviceAddress, byte *scratchPad) 
+    int getRaw(byte *deviceAddress, byte *scratchPad)
     {
       byte lsb, msb, b6, b7;
       noInterrupts();
@@ -556,10 +596,10 @@ class AsyncTemperatureReader
             // My 0x10 family are fakes, or very early DS1820s. (Marked DS1820 on the package)
             // They measure 8 signficant bits and a sign bit.
             // They count half degrees in the MSB:LSB.  The "offset"  MSB:LSB is wildly wrong.
-            // The did not do well in my deep freeze, and can't read negative temperatures. 
+            // The did not do well in my deep freeze, and can't read negative temperatures.
             // Additional sixteenths of a degree are extracted by the leftover count
             // in sPad[6].  sPad[6] counts down from 0x10 to 0,  Halfway down its count and
-            // again when it gets to 0 it increments MSB:LSB. 
+            // again when it gets to 0 it increments MSB:LSB.
             // At zero it resets to 0X10.  Count rate increases with increasing temperature.
             // A problem is the "initial value" of MSB:LSB is nowhere near
             // where the spec sheet says, (like about 66 degrees off) so I have had
@@ -572,7 +612,7 @@ class AsyncTemperatureReader
 
             // These are now in 16'ths of a degree. Change them to 128ths. Wait for better hardware with more sub-degree resoluation.
             int16_t x  = raw << 3;
-            
+
             // Linear remapping calculated from (x0,y0) and (x1, y1) measurements at about 22 degrees and 60 degrees.  f(x) = a + bx
             // I don't have a good reference themometer, so these numbers might be off by some margin.  Let me know if you can measure accurately.
             float a = 8900;
@@ -582,8 +622,7 @@ class AsyncTemperatureReader
             return (y);
           }
       }
-
-      return 0xFFFF;  // To mean "we have no idea" 
+      return 0xFFFF;  // To mean "we have no idea"
     }
 
     float getTempC(byte * deviceAddress, byte * scratchPad)
@@ -617,8 +656,8 @@ class AsyncTemperatureReader
 
     void begin()
     {
-      // Initial setup of the timer, etc. 
-      
+      // Initial setup of the timer, etc.
+
       noInterrupts();   //stop interrupts
       pinMode(debugPin, OUTPUT);
       flushStack();
@@ -658,17 +697,17 @@ AsyncTemperatureReader myTemperatureSensors;   // A single instance of the class
 
 // Diagnostic, keeps track of the longest interval in the ISR.
 // Can be read and zerod in main program within a critical section.
-long ISR_max_busytime = 0;        
+long ISR_max_busytime = 0;
 
 
 ISR(TIMER2_COMPA_vect) {
-//  long t0 =  micros();                          // diagnostic
+  //  long t0 =  micros();                          // diagnostic
 
   TCCR2B = 0;                                   // pg 162. Stop the timer
   OCR2A = myTemperatureSensors.doTimeslice();  // Do a timeslice, and collect the next required delay
   TCNT2 = 0;                                    // re-start the counter again from zero
-  TCCR2B |= (1 << CS22);                        // pg 162.  Mega=pg188 Set prescaler, Start the timer    
+  TCCR2B |= (1 << CS22);                        // pg 162.  Mega=pg188 Set prescaler, Start the timer
 
-//  long et = micros() - t0;   // diagnostic
- // if (et > ISR_max_busytime) ISR_max_busytime = et;
+  //  long et = micros() - t0;   // diagnostic
+  // if (et > ISR_max_busytime) ISR_max_busytime = et;
 }
