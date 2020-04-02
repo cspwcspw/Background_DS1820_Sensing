@@ -1,6 +1,20 @@
 # Background Sensing of 1-Wire DS1820 Temperature Sensors
 
-##  Temperature sensing with Dallas DS1820-type sensors
+by Peter Wentworth
+
+## New Features and a New Library + Demo (2 April 2020)
+
+A single-drop 1-wire bus is one that has just one sensor attached.  In this case there are some optimizations: one can read the device scratchpad without having to send a `deviceID`, and one can directly read the `deviceID` without the tree-search and enumeration used by the more complicated `ROMSEARCH` algorithm. So those two features have been added.
+
+And there was some cleanup and refactoring in the code.
+
+In addition, a new library specifically to do the `ROMSEARCH` has been
+ provided, together with its own demonstration program.  It can discover 
+ and enumerate all the devices attached to the bus.  This does not run 
+ in the background like the main library - in most cases we think
+ it will only be used during setup and initialization.
+
+## Temperature sensing with Dallas DS1820-type sensors
 
 ![sensors2](Images/sensors2.png "Temperature Sensors1")
 
@@ -492,6 +506,6 @@ MOSFET temperatures that tells me something is about to emit its magic
 blue smoke.  
 
 
-<sub>Last updated:  30 March 2020</sub>
+<sub>Last updated:  2 April 2020</sub>
 
 
