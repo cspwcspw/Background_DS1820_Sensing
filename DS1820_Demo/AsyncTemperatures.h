@@ -139,31 +139,29 @@ inline byte sampleBus()
 #define ALARMSEARCH     0xEC  // Query bus for devices with an alarm condition
 #define SELECTDEVICE    0x55  // Specific device address to follow
 #define SKIPROMWILDCARD 0xCC  // Skip device address, all devices must execute command
-// Used in this lib ahead of STARTCONVO command.
-
 
 // Status codes.
-const byte Success = 0x00;           // Zero means "ok, all done successfully"
-const byte StillBusy = 0x01;
-const byte NoDeviceOnBus = 0x02;     // bit set indicates no device on bus
-const byte DevicesAreBusy = 0x04;    // bit set means we're still waiting for sensors to complete their conversions
+const byte StillBusy = 0x01;         // Wait for this bit to become 0 before interrogating the other status bits.
+const byte NoDeviceOnBus = 0x02;     // bit set indicates no device responded on the bus after RESET.
+const byte DevicesAreBusy = 0x04;    // bit set means we're still waiting for sensors to complete their conversions.
+const byte CRCError = 0x08;          // Future use.
+
 
 // The opcodes for our interpreter...
 
-const byte BusLow = 1;                // Drive the bus low
-const byte ReadRemainingBits = 2;     // One-byte opand is bit index position [0..71] where next incoming bit is stored into scratchpad
-const byte SendRemainingBits = 3;     // Two one-byte opands, the bitcount still to be sent, and the byte part still to be sent
-const byte SendRemainingIDBytes = 4;  // One byte opand is index of next ID byte to send. It initiates SendRemainingBits for the next ID byte.
-const byte WaitForBusRelease = 5;     // A test-then-yield operation repeatedly executed while waiting for all sensors to complete temperature conversions.
-const byte BusRelease = 6;            // Allow the bus to float up to its pull-up value
-const byte ClearBusyStatus = 7;       // Typically scheduled as the last instruction after the final delay before the interpreter becomes idle.
-const byte BusSample = 8;             // Part of the Reset sequence requires sampling the bus to confirm that there are some devices present.
-const byte TestTimings = 9;           // Two-byte opand is number of times to still repeat our test timing sequence
-const byte ReadScratchPad = 10;       // Initiates reading of whole scratchpad.  No opand
-const byte StartIDSend = 11;          // After Reset we have to address a specific device by ID in order to read its scratchpad
-const byte Reset = 12;                // Initiates the 1-wire bus Reset.  It needs long delays, achieved here by ending the timeslice.
-const byte Yield = 13;                // Ends the current timeslice.  The one byte opand is the number of TIMER2 tics we need to be inactive for.
-
+const byte BusLow = 1;              // Drive the bus low
+const byte BusRelease = 2;          // Allow the bus to float up to its pull-up value.
+const byte BusSample = 3;           // Read the bus.
+const byte Yield = 4;               // Ends the current timeslice.  The one byte opand is the number of TIMER2 tics we need to be inactive for.
+const byte Reset = 5;               // Initiates the 1-wire bus Reset.  It needs long delays, achieved here by ending the timeslice.
+const byte WaitForBusRelease = 6;   // A test-then-yield operation. Repeats itself while sensors are completing temperature conversions.
+const byte ReadRemainingBits = 7;   // Two opands: (bitPos, n). Store next bit at inputBuf<bitPos>. Stop when bitPos==n.
+const byte SendRemainingBits = 8;   // Two opands (n, b). n is bitcount still to be sent, b is rest of byte still to be sent.
+const byte SendRemainingIDBytes = 9;// One opand n. Index of next ID byte to send. It expands into SendRemainingBits for each ID byte.
+const byte ClearBusyStatus = 10;    // Typically scheduled as the last instruction after the final delay before the interpreter becomes idle.
+const byte TestTimings = 11;        // Two-byte opand is number of times to still repeat our test timing sequence
+const byte ReadScratchPad = 12;     // Initiates reading of whole scratchpad.  No opand
+const byte StartIDSend = 13;        // After Reset we have to address a specific device by ID in order to read its scratchpad
 
 // http://ww1.microchip.com/downloads/en/appnotes/01199a.pdf
 // The protocol mandates certain delays (desired). I map those into
@@ -177,11 +175,10 @@ const byte Yield = 13;                // Ends the current timeslice.  The one by
 //  DelayDesired     = OCR2A tics   //  Observed delay when measured
 const byte Micros55  = 8;    //        todo
 const byte Micros60  = 10;   //
-const byte Micros64  = 10;   //
-const byte Micros70  = 11;   //
+const byte Micros64  = 11;   //
+const byte Micros70  = 12;   //
 const byte Micros410 = 96;   //
 const byte Micros480 = 110;  //
-
 
 class AsyncTemperatureReader
 {
@@ -193,14 +190,17 @@ class AsyncTemperatureReader
     byte theCode[stackSize];
     byte topOfStack;
 
-    uint8_t status;
+    byte status;
 
-    const uint8_t *deviceAddr;     // The device address of the sensor
-    byte idByteIndex;        // Counts up from 0 to 8 as we send address bytes
+    const byte *deviceAddr;     // The device address of the sensor
+    byte idByteIndex;           // Counts up from 0 to 8 as we send address bytes
 
-    uint8_t *inputBuf;           // A buffer, supplied by the user, for reading data from the sensor
+    byte *inputBuf;           // A buffer, supplied by the user, for reading data from the sensor
     // Usually used for reading the device's scratchpad, but sometimes
     // we can read the device's ID here.
+
+
+  private:
 
     void flushStack() {
       topOfStack = 0;
@@ -224,7 +224,7 @@ class AsyncTemperatureReader
         for (int i = 0; i < topOfStack; i++) {
           stackSnapshot[i] = theCode[i];
         }
-        // flushStack();
+        flushStack();
         return;
       }
 
@@ -248,8 +248,8 @@ class AsyncTemperatureReader
     {
       return theCode[--topOfStack];
     }
-   
- 
+
+
     inline void pushSendOneByte(byte b)
     { push(b);
       push(8);
@@ -265,7 +265,7 @@ class AsyncTemperatureReader
 
   public:
 
-    uint8_t doTimeslice()
+    byte doTimeslice()
     {
 
       // Pre: interrupts are disabled.
@@ -295,9 +295,9 @@ class AsyncTemperatureReader
           case SendRemainingBits: {
               //  top of stack is the number of bits still to send
               // below that is the remainder of the byte we are presently sending.
-              byte theBitToSend = theCode[topOfStack-2] & 0x01;
-              if (--theCode[topOfStack-1] > 0) {  // more work remaining after this bit?
-                theCode[topOfStack-2] >>= 1;  
+              byte theBitToSend = theCode[topOfStack - 2] & 0x01;
+              if (--theCode[topOfStack - 1] > 0) { // more work remaining after this bit?
+                theCode[topOfStack - 2] >>= 1;
                 push(SendRemainingBits);
               }
               else {
@@ -362,24 +362,24 @@ class AsyncTemperatureReader
               _delay_us(6);
               releaseBus();
               _delay_us(9);
-              int thisBit = sampleBus();
+              byte thisBit = sampleBus();
               digitalWrite(debugPin, HIGH);
 
-              byte bitPos = theCode[topOfStack-1];         // a value 0.. that counts up as bits arrive
-              byte numBitsToRead = theCode[topOfStack-2];  // a value that tells us when to exit the loop
+              byte bitPos = theCode[topOfStack - 1];       // a value 0.. that counts up as bits arrive
+              byte numBitsToRead = theCode[topOfStack - 2]; // a value that tells us when to exit the loop
 
               // Shift the new bit into the receive buffer
               if (thisBit)  {  // we need to store the 1 bit
                 byte mask = 0x01 << (bitPos % 8); // create a mask
                 byte inputBufIndx = (bitPos / 8);
-                inputBuf[inputBufIndx] |= mask;               
+                inputBuf[inputBufIndx] |= mask;
               }
-              
-              if (++theCode[topOfStack-1] < numBitsToRead) {  // if still more bits need to be read
-                   push(ReadRemainingBits);
-              }   
+
+              if (++theCode[topOfStack - 1] < numBitsToRead) { // if still more bits need to be read
+                push(ReadRemainingBits);
+              }
               else {
-                topOfStack -= 2;  // lose the operands, we're done here.      
+                topOfStack -= 2;  // lose the operands, we're done here.
               }
               YieldFor(Micros55);
             }
@@ -428,7 +428,8 @@ class AsyncTemperatureReader
 
           case BusSample: {
               releaseBus();
-              int thisBit = sampleBus();
+              _delay_us(2);
+              byte thisBit = sampleBus();
               if (thisBit == 1) {
                 // No device present on bus.  Set the status accordingly, and abandon all pending computation.
                 //  flushStack();
@@ -436,6 +437,7 @@ class AsyncTemperatureReader
                 digitalWrite(LED_ALERT, HIGH);
               }
               // If there is a device present, we can just carry on
+              YieldFor(Micros55);
             }
             break;
 
@@ -443,7 +445,8 @@ class AsyncTemperatureReader
             { // Here is where we can repeat this test-and-wait again cycle a really long time if
               // we have a slow device converting temperatures
               releaseBus();
-              int thisBit = sampleBus();
+              _delay_us(2);
+              byte thisBit = sampleBus();
               if (thisBit == 0) // No, some device is still holding the bus LOW
               {
                 push(WaitForBusRelease);  // Loop around to try again after about
@@ -505,14 +508,14 @@ class AsyncTemperatureReader
     }
 
   private:
-    void _readScratchpad(bool isMultidrop, const uint8_t* deviceAddress, uint8_t *scratchPad)
+    void _readScratchpad(bool isMultidrop, const byte* deviceAddress, byte *scratchPad)
     {
       noInterrupts();
       if (isMultidrop) {
         deviceAddr = deviceAddress;
       }
       inputBuf = scratchPad;
-      memset(inputBuf, 0, 9); // we only store 1 bits, so this array must be zeroed. 
+      memset(inputBuf, 0, 9); // we only store 1 bits, so this array must be zeroed.
       flushStack();
       status = StillBusy;
       push(ClearBusyStatus); // Operations back to front on the stack: do this when ReadScratchPad terminates
@@ -523,29 +526,29 @@ class AsyncTemperatureReader
 
   public:
 
-    void readScratchpadAsync(const uint8_t* deviceAddress, uint8_t *scratchPad)
+    void readScratchpadAsync(const byte* deviceAddress, byte *scratchPad)
     {
       _readScratchpad(true, deviceAddress, scratchPad);
     }
 
     // If we have single-drop bus (i.e. only one device on the bus) there is no need
     // to send the deviceAddress.   DS18B20 datasheet, page 11
-    void readUniqueScratchpadAsync(uint8_t *scratchPad)
+    void readUniqueScratchpadAsync(byte *scratchPad)
     {
       _readScratchpad(false, NULL, scratchPad);
     }
 
     // If we have a single-drop bus there is a lightweight way to discover its ID
-    void getUniqueDeviceIDAsync(byte* deviceAddress)
+    void getUniqueDeviceIDAsync(byte * deviceAddress)
     {
       noInterrupts();
       inputBuf = deviceAddress;
-      memset(inputBuf, 0, 8); // we only store 1 bits, so this array must be zeroed. 
+      memset(inputBuf, 0, 8); // we only store 1 bits, so this array must be zeroed.
       flushStack();
       status = StillBusy;
       push(ClearBusyStatus); // Operations back to front on the stack: do this when ReadScratchPad terminates
       push(64);  // total number of bits we want to read
-      push(0);   // and the index to put the next bit in the buffer   
+      push(0);   // and the index to put the next bit in the buffer
       push(ReadRemainingBits);
       pushSendOneByte(READROM);
       push(Reset);
@@ -573,7 +576,7 @@ class AsyncTemperatureReader
       interrupts();
     }
 
-    int getRaw(byte *deviceAddress, byte *scratchPad)
+    int getRaw(byte * deviceAddress, byte * scratchPad)
     {
       byte lsb, msb, b6, b7;
       noInterrupts();
@@ -676,7 +679,9 @@ class AsyncTemperatureReader
       interrupts();   //allow interrupts
     }
 
-    byte busyWaitForZeroStatus(const char *msg, int millisTimeout)
+    // Wait for the status bits we are interested in to all be zero. (status & mask).
+    // Timeout if it doesn't happen.
+    byte busyWait(const char *msg, int millisTimeout)
     { byte response;
       int count = 0;
       while (true) {
@@ -691,6 +696,7 @@ class AsyncTemperatureReader
         delay(1);
       }
     }
+
 };
 
 AsyncTemperatureReader myTemperatureSensors;   // A single instance of the class manages one wire.
