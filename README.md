@@ -4,15 +4,19 @@ by Peter Wentworth
 
 ## New Features and a New Library + Demo (2 April 2020)
 
-A single-drop 1-wire bus is one that has just one sensor attached.  In this case there are some optimizations: one can read the device scratchpad without having to send a `deviceID`, and one can directly read the `deviceID` without the tree-search and enumeration used by the more complicated `ROMSEARCH` algorithm. So those two features have been added.
+A single-drop 1-wire bus is one that has just one sensor attached.  
+In this case there are some 
+optimizations: one can read the device scratchpad without having to send a `deviceID`, 
+and one can directly read the `deviceID` without the tree-search and enumeration 
+used by the more complicated `ROMSEARCH` algorithm. So those two features 
+have been added.
 
 And there was some cleanup and refactoring in the code.
 
-In addition, a new library specifically to do the `ROMSEARCH` has been
- provided, together with its own demonstration program.  It can discover 
- and enumerate all the devices attached to the bus.  This does not run 
- in the background like the main library - in most cases we think
- it will only be used during setup and initialization.
+In addition, a new library specifically to discover ane enumerate all the devices on
+the bus has been provided, together with its own demonstration program. 
+Unlike this library, it does not run in the background - in most cases we think
+it will only be used during setup and initialization.
 
 ## Temperature sensing with Dallas DS1820-type sensors
 
@@ -291,10 +295,10 @@ telling them all to start their conversions.
     }
 ```
 
-Our `WaitForBusRelease` opcode samples the bus, and either clears the status bit
-to indicate that all devices have finished their temperature conversions. 
-If any device is still busy, push an opcode for a future check, and 
-yield from the timeslice. 
+Our `WaitForBusRelease` opcode samples the bus, and clears the status bit
+if all devices have finished their temperature conversions. 
+If any device is still busy, it sets up to repeat itself in a future check, and 
+yields from the timeslice. 
 
 ```
           case WaitForBusRelease:
@@ -506,6 +510,5 @@ MOSFET temperatures that tells me something is about to emit its magic
 blue smoke.  
 
 
-<sub>Last updated:  2 April 2020</sub>
-
+<sub>Last updated:  13 April 2020</sub>
 
